@@ -83,6 +83,9 @@ struct GetShardsParams {
     index: Option<String>,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct DebugHeadersParams {}
+
 #[tool_router]
 impl EsBaseTools {
     //---------------------------------------------------------------------------------------------
@@ -285,6 +288,152 @@ impl EsBaseTools {
         Ok(CallToolResult::success(vec![
             Content::text(format!("Found {} shards:", response.len())),
             Content::json(response)?,
+        ]))
+    }
+
+    /// Tool: debug headers
+    #[tool(
+        description = "Retourne les entêtes visibles côté serveur (si transmis par le proxy).",
+        annotations(title = "Debug headers", read_only_hint = true)
+    )]
+    async fn debug_headers(
+        &self,
+        req_ctx: RequestContext<RoleServer>,
+        Parameters(DebugHeadersParams {}): Parameters<DebugHeadersParams>,
+    ) -> Result<CallToolResult, rmcp::Error> {
+        use http::request::Parts;
+        use serde_json::{Map, Value};
+
+        let headers_json = req_ctx
+            .extensions
+            .get::<Parts>()
+            .map(|p| {
+                let mut map = Map::new();
+                for (name, value) in p.headers.iter() {
+                    let v = value
+                        .to_str()
+                        .map(|s| Value::String(s.to_string()))
+                        .unwrap_or_else(|_| Value::String(String::from("[non-UTF8]")));
+                    map.insert(name.as_str().to_string(), v);
+                }
+                Value::Object(map)
+            })
+            .unwrap_or(Value::Null);
+
+        let body = json!({ "headers": headers_json });
+        Ok(CallToolResult::success(vec![
+            Content::text(serde_json::to_string_pretty(&body).unwrap()),
+        ]))
+    }
+
+    //---------------------------------------------------------------------------------------------
+    /// Tool: search the GSE document library
+    #[tool(
+        description = "Search the GSE document library using Azure Entra ID token and user query.",
+        annotations(title = "Search GSE Document Library", read_only_hint = false)
+    )]
+    async fn searchgsedocumentlibrary(
+        &self,
+        req_ctx: RequestContext<RoleServer>,
+        Parameters(SearchGseDocumentLibraryParams { user_query }): Parameters<SearchGseDocumentLibraryParams>,
+    ) -> Result<CallToolResult, rmcp::Error> {
+        use reqwest::Client;
+
+        // Step 1: Retrieve the bearer token from the request context
+        let token = req_ctx
+            .extensions
+            .get::<Parts>()
+            .and_then(|parts| parts.headers.get("authorization"))
+            .and_then(|value| value.to_str().ok())
+            .and_then(|auth| auth.strip_prefix("Bearer "))
+            .ok_or_else(|| rmcp::Error::new("Missing or invalid authorization token"))?;
+
+        // Step 2: Use the token to fetch the user's email address from Microsoft Graph API
+        let client = Client::new();
+        let graph_response = client
+            .get("https://graph.microsoft.com/v1.0/me")
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|e| rmcp::Error::new(format!("Failed to call Microsoft Graph API: {}", e)))?;
+
+        let graph_data: Value = graph_response
+            .json()
+            .await
+            .map_err(|e| rmcp::Error::new(format!("Failed to parse Microsoft Graph API response: {}", e)))?;
+
+        let email = graph_data
+            .get("mail")
+            .and_then(Value::as_str)
+            .ok_or_else(|| rmcp::Error::new("Failed to retrieve email address from Graph API response"))?;
+
+        // Step 3: Query the GSEDOCSACL search application
+        let acl_request = json!({
+            "name": "GSEDOCSACL",
+            "params": {
+                "query_string": email,
+                "default_field": "_id"
+            }
+        });
+
+        let acl_response = self.es_client.get(req_ctx)
+            .search(SearchParts::None)
+            .body(acl_request)
+            .send()
+            .await
+            .map_err(|e| rmcp::Error::new(format!("Failed to query GSEDOCSACL: {}", e)))?;
+
+        let acl_data: Value = read_json(acl_response).await?;
+        let access_control = acl_data
+            .get("accessControl")
+            .ok_or_else(|| rmcp::Error::new("Failed to retrieve accessControl from GSEDOCSACL response"))?;
+
+        // Step 4: Query the GSEDOCS search application
+        let gsedocs_request = json!({
+            "name": "GSEDOCS",
+            "params": {
+                "size": 5,
+                "query_name": "",
+                "query_content": user_query,
+                "semantic_field": "semantic_text",
+                "name_field": "name",
+                "search_content": true,
+                "search_name": false,
+                "number_of_fragments": 3,
+                "content_boost": 1.0,
+                "highlight_name": true,
+                "require_name_filter": false,
+                "minimum_should_match": 1,
+                "min_score": 0.0,
+                "access_control": access_control
+            }
+        });
+
+        let gsedocs_response = self.es_client.get(req_ctx)
+            .search(SearchParts::None)
+            .body(gsedocs_request)
+            .send()
+            .await
+            .map_err(|e| rmcp::Error::new(format!("Failed to query GSEDOCS: {}", e)))?;
+
+        let gsedocs_data: Value = read_json(gsedocs_response).await?;
+
+        // Step 5: Extract results and highlights
+        let results = gsedocs_data
+            .get("hits")
+            .and_then(|hits| hits.get("hits"))
+            .ok_or_else(|| rmcp::Error::new("Failed to retrieve hits from GSEDOCS response"))?;
+
+        let highlights = gsedocs_data
+            .get("highlight")
+            .ok_or_else(|| rmcp::Error::new("Failed to retrieve highlights from GSEDOCS response"))?;
+
+        // Step 6: Return the results and highlights
+        Ok(CallToolResult::success(vec![
+            Content::text("Search results:"),
+            Content::json(results)?,
+            Content::text("Highlights:"),
+            Content::json(highlights)?,
         ]))
     }
 }
