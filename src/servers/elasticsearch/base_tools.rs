@@ -16,9 +16,9 @@
 // under the License.
 
 use crate::servers::elasticsearch::{EsClientProvider, read_json};
-use elasticsearch::cat::{CatIndicesParts, CatShardsParts};
-use elasticsearch::indices::IndicesGetMappingParts;
-use elasticsearch::{Elasticsearch, SearchParts};
+//use elasticsearch::cat::{CatIndicesParts, CatShardsParts};
+//use elasticsearch::indices::IndicesGetMappingParts;
+use elasticsearch::{Elasticsearch};//, SearchParts};
 use indexmap::IndexMap;
 use rmcp::handler::server::tool::{Parameters, ToolRouter};
 use rmcp::model::{
@@ -98,6 +98,7 @@ struct SearchGseDocumentLibraryParams {
 impl EsBaseTools {
     //---------------------------------------------------------------------------------------------
     /// Tool: list indices
+    /*
     #[tool(
         description = "List all available Elasticsearch indices",
         annotations(title = "List ES indices", read_only_hint = true)
@@ -123,9 +124,10 @@ impl EsBaseTools {
             Content::json(response)?,
         ]))
     }
-
+    */
     //---------------------------------------------------------------------------------------------
     /// Tool: get mappings for an index
+    /*
     #[tool(
         description = "Get field mappings for a specific Elasticsearch index",
         annotations(title = "Get ES index mappings", read_only_hint = true)
@@ -152,12 +154,13 @@ impl EsBaseTools {
             Content::json(mapping)?,
         ]))
     }
-
+    */
     //---------------------------------------------------------------------------------------------
     /// Tool: search an index with the Query DSL
     ///
     /// The additional 'fields' parameter helps some LLMs that don't know about the `_source`
     /// request property to narrow down the data returned and reduce their context size
+    /*
     #[tool(
         description = "Perform an Elasticsearch search with the provided query DSL.",
         annotations(title = "Elasticsearch search DSL query", read_only_hint = true)
@@ -227,9 +230,10 @@ impl EsBaseTools {
 
         Ok(CallToolResult::success(results))
     }
-
+    */
     //---------------------------------------------------------------------------------------------
     /// Tool: ES|QL
+    /*
     #[tool(
         description = "Perform an Elasticsearch ES|QL query.",
         annotations(title = "Elasticsearch ES|QL query", read_only_hint = true)
@@ -261,9 +265,10 @@ impl EsBaseTools {
             Content::json(objects)?,
         ]))
     }
-
+    */
     //---------------------------------------------------------------------------------------------
     // Tool: get shard information
+    /*
     #[tool(
         description = "Get shard information for all or specific indices.",
         annotations(title = "Get ES shard information", read_only_hint = true)
@@ -298,8 +303,9 @@ impl EsBaseTools {
             Content::json(response)?,
         ]))
     }
-
+    */
     /// Tool: debug headers
+    /*
     #[tool(
         description = "Retourne les entêtes visibles côté serveur (si transmis par le proxy).",
         annotations(title = "Debug headers", read_only_hint = true)
@@ -333,11 +339,11 @@ impl EsBaseTools {
             Content::text(serde_json::to_string_pretty(&body).unwrap()),
         ]))
     }
-
+    */
     //---------------------------------------------------------------------------------------------
     /// Tool: search the GSE document library
     #[tool(
-        description = "Search the GSE document library using Azure Entra ID token and user query.",
+        description = "Search the GSE document library with a content search and get the documents contents, names and urls.",
         annotations(title = "Search GSE Document Library", read_only_hint = false)
     )]
     async fn searchgsedocumentlibrary(
@@ -396,7 +402,6 @@ impl EsBaseTools {
 
         // Step 3: Query the GSEDOCSACL search application
         let acl_request = json!({
-            "name": "GSEDOCSACL",
             "params": {
                 "query_string": email,
                 "default_field": "_id"
@@ -404,9 +409,15 @@ impl EsBaseTools {
         });
 
         let acl_response = es_client
-            .search(SearchParts::None)
-            .body(acl_request)
-            .send()
+            .transport()
+            .send(
+                elasticsearch::http::Method::Post,
+                "/_application/search_application/GSEDOCSACL/_search",
+                http::HeaderMap::new(), // was: None
+                None::<&()>,
+                Some(elasticsearch::http::request::JsonBody::new(acl_request)),
+                None,
+            )
             .await;
 
         let acl_data: Value = read_json(acl_response).await?;
@@ -420,7 +431,6 @@ impl EsBaseTools {
 
         // Step 4: Query the GSEDOCS search application
         let gsedocs_request = json!({
-            "name": "GSEDOCS",
             "params": {
                 "size": 5,
                 "query_name": "",
@@ -440,17 +450,18 @@ impl EsBaseTools {
         });
 
         let gsedocs_response = es_client
-            .search(SearchParts::None)
-            .body(gsedocs_request)
-            .send()
-            .await
-            .map_err(|e| rmcp::Error::new(
-                ErrorCode::INTERNAL_ERROR, // Internal error
-                format!("Failed to query GSEDOCS: {}", e),
+            .transport()
+            .send(
+                elasticsearch::http::Method::Post,
+                "/_application/search_application/GSEDOCS/_search",
+                http::HeaderMap::new(),
+                None::<&()>,
+                Some(elasticsearch::http::request::JsonBody::new(gsedocs_request)),
                 None,
-            ))?;
+            )
+            .await;
 
-        let gsedocs_data: Value = read_json(Ok(gsedocs_response)).await?;
+        let gsedocs_data: Value = read_json(gsedocs_response).await?;
 
         // Step 5: Extract results and highlights
         let results = gsedocs_data
