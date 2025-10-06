@@ -23,6 +23,7 @@ use indexmap::IndexMap;
 use rmcp::handler::server::tool::{Parameters, ToolRouter};
 use rmcp::model::{
     CallToolResult, Content, Implementation, JsonObject, ProtocolVersion, ServerCapabilities, ServerInfo,
+    ErrorCode,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler};
@@ -31,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_aux::prelude::*;
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
+use http::request::Parts;
 
 #[derive(Clone)]
 pub struct EsBaseTools {
@@ -85,6 +87,12 @@ struct GetShardsParams {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct DebugHeadersParams {}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct SearchGseDocumentLibraryParams {
+    /// Requête utilisateur pour la recherche
+    user_query: String,
+}
 
 #[tool_router]
 impl EsBaseTools {
@@ -346,7 +354,11 @@ impl EsBaseTools {
             .and_then(|parts| parts.headers.get("authorization"))
             .and_then(|value| value.to_str().ok())
             .and_then(|auth| auth.strip_prefix("Bearer "))
-            .ok_or_else(|| rmcp::Error::new("Missing or invalid authorization token"))?;
+            .ok_or_else(|| rmcp::Error::new(
+                ErrorCode::INVALID_PARAMS, // Invalid params
+                "Missing or invalid authorization token".to_string(),
+                None,
+            ))?;
 
         // Step 2: Use the token to fetch the user's email address from Microsoft Graph API
         let client = Client::new();
@@ -355,17 +367,32 @@ impl EsBaseTools {
             .bearer_auth(token)
             .send()
             .await
-            .map_err(|e| rmcp::Error::new(format!("Failed to call Microsoft Graph API: {}", e)))?;
+            .map_err(|e| rmcp::Error::new(
+                ErrorCode::INTERNAL_ERROR, // Internal error
+                format!("Failed to call Microsoft Graph API: {}", e),
+                None,
+            ))?;
 
         let graph_data: Value = graph_response
             .json()
             .await
-            .map_err(|e| rmcp::Error::new(format!("Failed to parse Microsoft Graph API response: {}", e)))?;
+            .map_err(|e| rmcp::Error::new(
+                ErrorCode::INTERNAL_ERROR, // Internal error
+                format!("Failed to parse Microsoft Graph API response: {}", e),
+                None,
+            ))?;
 
         let email = graph_data
             .get("mail")
             .and_then(Value::as_str)
-            .ok_or_else(|| rmcp::Error::new("Failed to retrieve email address from Graph API response"))?;
+            .ok_or_else(|| rmcp::Error::new(
+                ErrorCode::INTERNAL_ERROR, // Internal error
+                "Failed to retrieve email address from Graph API response".to_string(),
+                None,
+            ))?;
+
+        // Obtain ES client once; moving req_ctx only here
+        let es_client = self.es_client.get(req_ctx);
 
         // Step 3: Query the GSEDOCSACL search application
         let acl_request = json!({
@@ -376,17 +403,20 @@ impl EsBaseTools {
             }
         });
 
-        let acl_response = self.es_client.get(req_ctx)
+        let acl_response = es_client
             .search(SearchParts::None)
             .body(acl_request)
             .send()
-            .await
-            .map_err(|e| rmcp::Error::new(format!("Failed to query GSEDOCSACL: {}", e)))?;
+            .await;
 
         let acl_data: Value = read_json(acl_response).await?;
         let access_control = acl_data
             .get("accessControl")
-            .ok_or_else(|| rmcp::Error::new("Failed to retrieve accessControl from GSEDOCSACL response"))?;
+            .ok_or_else(|| rmcp::Error::new(
+                ErrorCode::INTERNAL_ERROR, // Internal error
+                "Failed to retrieve accessControl from GSEDOCSACL response".to_string(),
+                None,
+            ))?;
 
         // Step 4: Query the GSEDOCS search application
         let gsedocs_request = json!({
@@ -409,24 +439,36 @@ impl EsBaseTools {
             }
         });
 
-        let gsedocs_response = self.es_client.get(req_ctx)
+        let gsedocs_response = es_client
             .search(SearchParts::None)
             .body(gsedocs_request)
             .send()
             .await
-            .map_err(|e| rmcp::Error::new(format!("Failed to query GSEDOCS: {}", e)))?;
+            .map_err(|e| rmcp::Error::new(
+                ErrorCode::INTERNAL_ERROR, // Internal error
+                format!("Failed to query GSEDOCS: {}", e),
+                None,
+            ))?;
 
-        let gsedocs_data: Value = read_json(gsedocs_response).await?;
+        let gsedocs_data: Value = read_json(Ok(gsedocs_response)).await?;
 
         // Step 5: Extract results and highlights
         let results = gsedocs_data
             .get("hits")
             .and_then(|hits| hits.get("hits"))
-            .ok_or_else(|| rmcp::Error::new("Failed to retrieve hits from GSEDOCS response"))?;
+            .ok_or_else(|| rmcp::Error::new(
+                ErrorCode::INTERNAL_ERROR, // Internal error
+                "Failed to retrieve hits from GSEDOCS response".to_string(),
+                None,
+            ))?;
 
         let highlights = gsedocs_data
             .get("highlight")
-            .ok_or_else(|| rmcp::Error::new("Failed to retrieve highlights from GSEDOCS response"))?;
+            .ok_or_else(|| rmcp::Error::new(
+                ErrorCode::INTERNAL_ERROR, // Internal error
+                "Failed to retrieve highlights from GSEDOCS response".to_string(),
+                None,
+            ))?;
 
         // Step 6: Return the results and highlights
         Ok(CallToolResult::success(vec![
