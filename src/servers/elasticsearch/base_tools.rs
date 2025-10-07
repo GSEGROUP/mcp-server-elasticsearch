@@ -89,8 +89,17 @@ struct DebugHeadersParams {}
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct SearchGseDocumentLibraryParams {
-    /// Requête utilisateur pour la recherche
     user_query: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct GetDocumentsParams {
+    /// Terme de recherche pour les documents
+    query: String,
+
+    /// ID du site pour filtrer les documents (optionnel)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    site_id: Option<String>,
 }
 
 #[tool_router]
@@ -527,6 +536,172 @@ impl EsBaseTools {
             Content::json(highlights)?,
         ]))
     }
+
+    /// Tool: Get project ID by name
+#[tool(
+    description = "Retrieve the ID of a project based on its name or number.",
+    annotations(title = "Get Project ID", read_only_hint = true)
+)]
+async fn get_project_id(
+    &self,
+    req_ctx: RequestContext<RoleServer>,
+    Parameters(SearchGseDocumentLibraryParams { user_query }): Parameters<SearchGseDocumentLibraryParams>,
+) -> Result<CallToolResult, rmcp::Error> {
+    // Step 1: Retrieve the bearer token from the request context
+    let token = Self::extract_bearer_token(&req_ctx)?;
+    let email = Self::fetch_user_email(token).await?;
+    let es_client = self.es_client.get(req_ctx);
+    let access_control = self.fetch_access_control(&es_client, &email).await?;
+
+    // Step 2: Build the Elasticsearch query
+    let search_request = json!({
+        "query": {
+            "bool": {
+                "must": [
+                    { "term": { "object_type": "site" } },
+                    { "match": { "name": user_query } }
+                ]
+            }
+        },
+        "size": 1 // Limit to one result
+    });
+    println!("Search request: {}", search_request); // Debug log
+
+    // Step 3: Send the query to Elasticsearch
+    let search_response = es_client
+        .transport()
+        .send(
+            elasticsearch::http::Method::Post,
+            "/_application/search_application/GSEDOCS/_search", // Adjust the endpoint if necessary
+            http::HeaderMap::new(),
+            None::<&()>,
+            Some(elasticsearch::http::request::JsonBody::new(search_request)),
+            None,
+        )
+        .await;
+
+    let search_data: Value = read_json(search_response).await?;
+    println!("Search response: {}", search_data); // Debug log
+
+    // Step 4: Extract the project ID
+    let project_id = search_data
+        .get("hits")
+        .and_then(|hits| hits.get("hits"))
+        .and_then(|hits_array| hits_array.as_array())
+        .and_then(|array| array.first())
+        .and_then(|first_hit| first_hit.get("_source"))
+        .and_then(|source| source.get("id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| rmcp::Error::new(
+            ErrorCode::INTERNAL_ERROR,
+            "Failed to retrieve project ID from search response".to_string(),
+            None,
+        ))?;
+
+    // Step 5: Return the project ID
+    Ok(CallToolResult::success(vec![
+        Content::text(format!("Project ID: {}", project_id)),
+    ]))
+}
+/// Tool: Get documents by matching a term, optionally filtered by siteId
+#[tool(
+    description = "Retrieve a list of documents matching a term, optionally filtered by a specific siteId.",
+    annotations(title = "Get Documents", read_only_hint = true)
+)]
+async fn get_documents(
+    &self,
+    req_ctx: RequestContext<RoleServer>,
+    Parameters(GetDocumentsParams { query, site_id }): Parameters<GetDocumentsParams>,
+) -> Result<CallToolResult, rmcp::Error> {
+    let token = Self::extract_bearer_token(&req_ctx)?;
+    let email = Self::fetch_user_email(token).await?;
+    let es_client = self.es_client.get(req_ctx);
+    let access_control = self.fetch_access_control(&es_client, &email).await?;
+
+    let mut params = json!({
+            "query_name": query,
+            "name_field": "name",
+            "search_name": true, // Enable search by name
+            "search_content": false,
+            "access_control": access_control
+        });
+
+        // Add siteId filter if provided
+        if let Some(site_id) = site_id {
+            params["parentReference.siteId"] = json!(site_id);
+        }
+
+        let search_request = json!({ "params": params });
+        println!("Search request: {}", search_request); // Debug log
+
+        // Step 3: Send the query to Elasticsearch
+    let search_response = es_client
+        .transport()
+        .send(
+            elasticsearch::http::Method::Post,
+            "/_application/search_application/GSEDOCS/_search", // Adjust the endpoint if necessary
+            http::HeaderMap::new(),
+            None::<&()>,
+            Some(elasticsearch::http::request::JsonBody::new(search_request)),
+            None,
+        )
+        .await;
+
+    let search_data: Value = read_json(search_response).await?;
+    println!("Search response: {}", search_data); // Debug log
+
+    // Step 4: Extract the list of documents
+    let total_documents = search_data
+        .get("hits")
+        .and_then(|hits| hits.get("total"))
+        .and_then(|total| total.get("value"))
+        .and_then(Value::as_u64)
+        .ok_or_else(|| rmcp::Error::new(
+            ErrorCode::INTERNAL_ERROR,
+            "Failed to retrieve total document count from search response".to_string(),
+            None,
+        ))?;
+
+    let documents = search_data
+        .get("hits")
+        .and_then(|hits| hits.get("hits"))
+        .and_then(|hits_array| hits_array.as_array())
+        .map(|array| {
+            array
+                .iter()
+                .filter_map(|hit| {
+                    let name = hit
+                        .get("_source")
+                        .and_then(|source| source.get("name"))
+                        .and_then(Value::as_str)
+                        .map(String::from);
+
+                    let web_url = hit
+                        .get("_source")
+                        .and_then(|source| source.get("webUrl"))
+                        .and_then(Value::as_str)
+                        .map(String::from);
+
+                    match (name, web_url) {
+                        (Some(name), Some(web_url)) => Some(json!({ "name": name, "webUrl": web_url })),
+                        _ => None,
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .ok_or_else(|| rmcp::Error::new(
+            ErrorCode::INTERNAL_ERROR,
+            "Failed to retrieve documents from search response".to_string(),
+            None,
+        ))?;
+
+    // Step 5: Return the list of documents
+    Ok(CallToolResult::success(vec![
+        Content::text(format!("Total documents matching the query: {}", total_documents)),
+        Content::json(documents)?,
+    ]))
+}
+
 }
 
 #[tool_handler]
