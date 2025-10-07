@@ -95,6 +95,106 @@ struct SearchGseDocumentLibraryParams {
 
 #[tool_router]
 impl EsBaseTools {
+    // Fonctions générales : 
+    fn extract_bearer_token(req_ctx: &RequestContext<RoleServer>) -> Result<&str, rmcp::Error> {
+    req_ctx
+        .extensions
+        .get::<Parts>()
+        .and_then(|parts| parts.headers.get("authorization"))
+        .and_then(|value| value.to_str().ok())
+        .and_then(|auth| auth.strip_prefix("Bearer "))
+        .ok_or_else(|| rmcp::Error::new(
+            ErrorCode::INVALID_PARAMS,
+            "Missing or invalid authorization token".to_string(),
+            None,
+        ))
+}
+
+    async fn fetch_user_email(token: &str) -> Result<String, rmcp::Error> {
+    use reqwest::Client;
+    let client = Client::new();
+    let graph_response = client
+        .get("https://graph.microsoft.com/v1.0/me")
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| rmcp::Error::new(
+            ErrorCode::INTERNAL_ERROR,
+            format!("Failed to call Microsoft Graph API: {}", e),
+            None,
+        ))?;
+
+    let graph_data: Value = graph_response
+        .json()
+        .await
+        .map_err(|e| rmcp::Error::new(
+            ErrorCode::INTERNAL_ERROR,
+            format!("Failed to parse Microsoft Graph API response: {}", e),
+            None,
+        ))?;
+
+    graph_data
+        .get("mail")
+        .and_then(Value::as_str)
+        .map(String::from)
+        .ok_or_else(|| rmcp::Error::new(
+            ErrorCode::INTERNAL_ERROR,
+            "Failed to retrieve email address from Graph API response".to_string(),
+            None,
+        ))
+}
+
+    
+    async fn fetch_access_control(
+        &self,
+        es_client: &Elasticsearch,
+        email: &str,
+    ) -> Result<Value, rmcp::Error> {
+        // Construire la requête pour GSEDOCSACL
+        let acl_request = json!({
+            "params": {
+                "query_string": email,
+                "default_field": "_id"
+            }
+        });
+        println!("ACL request: {}", acl_request); // Debug log
+
+        // Envoyer la requête à GSEDOCSACL
+        let acl_response = es_client
+            .transport()
+            .send(
+                elasticsearch::http::Method::Post,
+                "/_application/search_application/GSEDOCSACL/_search",
+                http::HeaderMap::new(),
+                None::<&()>,
+                Some(elasticsearch::http::request::JsonBody::new(acl_request)),
+                None,
+            )
+            .await;
+
+        // Lire la réponse JSON
+        let acl_data: Value = read_json(acl_response).await?;
+
+        // Extraire le champ `access_control`
+        acl_data
+            .get("hits")
+            .and_then(|hits| hits.get("hits"))
+            .and_then(|hits_array| hits_array.as_array())
+            .and_then(|array| array.first())
+            .and_then(|first_hit| first_hit.get("_source"))
+            .and_then(|source| source.get("query"))
+            .and_then(|query| query.get("template"))
+            .and_then(|template| template.get("params"))
+            .and_then(|params| params.get("access_control"))
+            .cloned()
+            .ok_or_else(|| rmcp::Error::new(
+                ErrorCode::INTERNAL_ERROR,
+                "Failed to retrieve access_control from GSEDOCSACL response".to_string(),
+                None,
+            ))
+    }
+
+
     //---------------------------------------------------------------------------------------------
     /// Tool: list indices
     /*
@@ -350,95 +450,14 @@ impl EsBaseTools {
         req_ctx: RequestContext<RoleServer>,
         Parameters(SearchGseDocumentLibraryParams { user_query }): Parameters<SearchGseDocumentLibraryParams>,
     ) -> Result<CallToolResult, rmcp::Error> {
-        use reqwest::Client;
         // Step 1: Retrieve the bearer token from the request context
-        println!("req_ctx in tool: {:?}", req_ctx); // Debug log
-        let token = req_ctx
-            .extensions
-            .get::<Parts>()
-            .and_then(|parts| parts.headers.get("authorization"))
-            .and_then(|value| value.to_str().ok())
-            .and_then(|auth| auth.strip_prefix("Bearer "))
-            .ok_or_else(|| rmcp::Error::new(
-                ErrorCode::INVALID_PARAMS, // Invalid params
-                "Missing or invalid authorization token".to_string(),
-                None,
-            ))?;
+        let token = Self::extract_bearer_token(&req_ctx)?;
+        // Step 2: Fetch the user's email address
+        let email = Self::fetch_user_email(token).await?;
 
-        // Step 2: Use the token to fetch the user's email address from Microsoft Graph API
-        let client = Client::new();
-        let graph_response = client
-            .get("https://graph.microsoft.com/v1.0/me")
-            .bearer_auth(token)
-            .send()
-            .await
-            .map_err(|e| rmcp::Error::new(
-                ErrorCode::INTERNAL_ERROR, // Internal error
-                format!("Failed to call Microsoft Graph API: {}", e),
-                None,
-            ))?;
-        
-
-        let graph_data: Value = graph_response
-            .json()
-            .await
-            .map_err(|e| rmcp::Error::new(
-                ErrorCode::INTERNAL_ERROR, // Internal error
-                format!("Failed to parse Microsoft Graph API response: {}", e),
-                None,
-            ))?;
-
-        let email = graph_data
-            .get("mail")
-            .and_then(Value::as_str)
-            .ok_or_else(|| rmcp::Error::new(
-                ErrorCode::INTERNAL_ERROR, // Internal error
-                "Failed to retrieve email address from Graph API response".to_string(),
-                None,
-            ))?;
-        
-        println!("User email: {}", email); // Debug log
-
-        // Obtain ES client once; moving req_ctx only here
-        // saut de ligne pour debug
-        println!("---");
-        println!("---");
-        println!("---");
-        println!("---");
-        println!("---");
-        println!("req_ctx in tool: {:?}", req_ctx); // Debug log
         let es_client = self.es_client.get(req_ctx);
-        println!("param ES client : {:?}", es_client); // Debug log
-        // Step 3: Query the GSEDOCSACL search application
-        let acl_request = json!({
-            "params": {
-                "query_string": email,
-                "default_field": "_id"
-            }
-        });
-        println!("ACL request: {}", acl_request); // Debug log
 
-        let acl_response = es_client
-            .transport()
-            .send(
-                elasticsearch::http::Method::Post,
-                "/_application/search_application/GSEDOCSACL/_search",
-                http::HeaderMap::new(), // was: None
-                None::<&()>,
-                Some(elasticsearch::http::request::JsonBody::new(acl_request)),
-                None,
-            )
-            .await;
-
-        let acl_data: Value = read_json(acl_response).await?;
-        let access_control = acl_data
-            .get("accessControl")
-            .ok_or_else(|| rmcp::Error::new(
-                ErrorCode::INTERNAL_ERROR, // Internal error
-                "Failed to retrieve accessControl from GSEDOCSACL response".to_string(),
-                None,
-            ))?;
-
+        let access_control = self.fetch_access_control(&es_client, &email).await?;
         // Step 4: Query the GSEDOCS search application
         let gsedocs_request = json!({
             "params": {
@@ -458,6 +477,7 @@ impl EsBaseTools {
                 "access_control": access_control
             }
         });
+        println!("GSEDOCS request: {}", gsedocs_request); // Debug log
 
         let gsedocs_response = es_client
             .transport()
@@ -470,9 +490,9 @@ impl EsBaseTools {
                 None,
             )
             .await;
-
+        
         let gsedocs_data: Value = read_json(gsedocs_response).await?;
-
+        println!("GSEDOCS response: {}", gsedocs_data); // Debug log
         // Step 5: Extract results and highlights
         let results = gsedocs_data
             .get("hits")
@@ -484,9 +504,17 @@ impl EsBaseTools {
             ))?;
 
         let highlights = gsedocs_data
-            .get("highlight")
+            .get("hits")
+            .and_then(|hits| hits.get("hits"))
+            .and_then(|hits_array| hits_array.as_array())
+            .map(|array| {
+                array
+                    .iter()
+                    .filter_map(|hit| hit.get("highlight"))
+                    .collect::<Vec<_>>()
+            })
             .ok_or_else(|| rmcp::Error::new(
-                ErrorCode::INTERNAL_ERROR, // Internal error
+                ErrorCode::INTERNAL_ERROR,
                 "Failed to retrieve highlights from GSEDOCS response".to_string(),
                 None,
             ))?;
