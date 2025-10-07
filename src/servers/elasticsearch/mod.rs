@@ -81,31 +81,19 @@ impl EsClientProvider {
     /// If the incoming request is a http request and has an `Authorization` header, use it
     /// to authenticate to the remote ES instance.
     pub fn get(&self, context: RequestContext<RoleServer>) -> Cow<'_, Elasticsearch> {
+        
         let client = &self.0;
 
-        let Some(mut auth) = context
-            .extensions
-            .get::<Parts>()
-            .and_then(|p| p.headers.get(header::AUTHORIZATION))
-            .and_then(|h| h.to_str().ok())
-        else {
-            // No auth
-            return Cow::Borrowed(client);
-        };
-
-        // MCP inspector insists on sending a bearer token and prepends "Bearer" to the value provided
-        if auth.starts_with("Bearer ApiKey ") || auth.starts_with("Bearer Basic ") {
-            auth = auth.trim_start_matches("Bearer ");
-        }
+        // Utiliser une clé API fixe pour l'authentification
+        let api_key = "T0haTGc1Y0Jjdjdua01od0RZVEE6cGVIRzZwaVoySEVzYThWUWNhZXlyQQ=="; // Remplacez par votre clé API ou configurez-la dynamiquement
 
         let transport = client
             .transport()
-            .clone_with_auth(Some(Credentials::AuthorizationHeader(auth.to_string())));
+            .clone_with_auth(Some(Credentials::EncodedApiKey(api_key.to_string())));
 
         Cow::Owned(Elasticsearch::new(transport))
-    }
 }
-
+}
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Tools {
     #[serde(flatten)]
@@ -184,7 +172,7 @@ impl ElasticsearchMcp {
         } else {
             None
         };
-
+        println!("Using credentials: {:?}", creds);
         let url = config.url.as_str();
         if url.is_empty() {
             return Err(anyhow::Error::msg("Elasticsearch URL is empty"));

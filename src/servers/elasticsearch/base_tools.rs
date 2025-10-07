@@ -14,7 +14,6 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
-
 use crate::servers::elasticsearch::{EsClientProvider, read_json};
 use elasticsearch::cat::{CatIndicesParts, CatShardsParts};
 use elasticsearch::indices::IndicesGetMappingParts;
@@ -346,8 +345,8 @@ impl EsBaseTools {
         Parameters(SearchGseDocumentLibraryParams { user_query }): Parameters<SearchGseDocumentLibraryParams>,
     ) -> Result<CallToolResult, rmcp::Error> {
         use reqwest::Client;
-
         // Step 1: Retrieve the bearer token from the request context
+        println!("req_ctx in tool: {:?}", req_ctx); // Debug log
         let token = req_ctx
             .extensions
             .get::<Parts>()
@@ -372,6 +371,7 @@ impl EsBaseTools {
                 format!("Failed to call Microsoft Graph API: {}", e),
                 None,
             ))?;
+        
 
         let graph_data: Value = graph_response
             .json()
@@ -390,10 +390,19 @@ impl EsBaseTools {
                 "Failed to retrieve email address from Graph API response".to_string(),
                 None,
             ))?;
+        
+        println!("User email: {}", email); // Debug log
 
         // Obtain ES client once; moving req_ctx only here
+        // saut de ligne pour debug
+        println!("---");
+        println!("---");
+        println!("---");
+        println!("---");
+        println!("---");
+        println!("req_ctx in tool: {:?}", req_ctx); // Debug log
         let es_client = self.es_client.get(req_ctx);
-
+        println!("param ES client : {:?}", es_client); // Debug log
         // Step 3: Query the GSEDOCSACL search application
         let acl_request = json!({
             "name": "GSEDOCSACL",
@@ -402,6 +411,7 @@ impl EsBaseTools {
                 "default_field": "_id"
             }
         });
+        println!("ACL request: {}", acl_request); // Debug log
 
         let acl_response = es_client
             .search(SearchParts::None)

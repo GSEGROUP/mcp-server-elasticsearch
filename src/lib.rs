@@ -109,7 +109,6 @@ pub async fn setup_services(config: &Option<PathBuf>, container_mode: bool) -> a
 
     // Expand environment variables in the config file
     let config = interpolator::interpolate_from_env(config)?;
-
     // JSON5 adds comments and multiline strings (useful for ES|QL) to JSON
     let config: Configuration = match serde_json5::from_str(&config) {
         Ok(c) => c,
@@ -121,7 +120,7 @@ pub async fn setup_services(config: &Option<PathBuf>, container_mode: bool) -> a
         }
         Err(err) => return Err(err)?,
     };
-
+    println!("Configuration: {config:#?}");
     let handler = elasticsearch::ElasticsearchMcp::new_with_config(config.elasticsearch, container_mode)?;
     Ok(handler)
 }
