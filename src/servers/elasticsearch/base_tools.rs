@@ -486,7 +486,7 @@ impl EsBaseTools {
             .transport()
             .send(
                 elasticsearch::http::Method::Post,
-                "/_application/search_application/GSEDEV_BIS/_search",
+                "/_application/search_application/GSEDEV/_search",
                 http::HeaderMap::new(),
                 None::<&()>,
                 Some(elasticsearch::http::request::JsonBody::new(gsedocs_request)),
