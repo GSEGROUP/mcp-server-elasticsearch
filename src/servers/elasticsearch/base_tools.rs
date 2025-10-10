@@ -89,7 +89,6 @@ struct DebugHeadersParams {}
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct SearchGseDocumentLibraryParams {
-    content_query: String,
     name_query: String,
     summary_query: String,
 }
@@ -460,7 +459,7 @@ impl EsBaseTools {
     async fn searchgsedocumentlibrary(
         &self,
         req_ctx: RequestContext<RoleServer>,
-        Parameters(SearchGseDocumentLibraryParams { content_query, name_query, summary_query }): Parameters<SearchGseDocumentLibraryParams>,
+        Parameters(SearchGseDocumentLibraryParams {name_query, summary_query }): Parameters<SearchGseDocumentLibraryParams>,
     ) -> Result<CallToolResult, rmcp::Error> {
         // Step 1: Retrieve the bearer token from the request context
         let token = Self::extract_bearer_token(&req_ctx)?;
@@ -475,7 +474,6 @@ impl EsBaseTools {
         // Step 4: Build the search application request
         let gsedocs_request = json!({
             "params": {
-                "query_content": content_query,
                 "query_name": name_query,
                 "query_summary": summary_query,
                 "access_control": access_control
@@ -488,7 +486,7 @@ impl EsBaseTools {
             .transport()
             .send(
                 elasticsearch::http::Method::Post,
-                "/_application/search_application/GSEDEV/_search",
+                "/_application/search_application/GSEDEV_BIS/_search",
                 http::HeaderMap::new(),
                 None::<&()>,
                 Some(elasticsearch::http::request::JsonBody::new(gsedocs_request)),
@@ -534,6 +532,7 @@ impl EsBaseTools {
         ]))
     }
 
+    /* 
     /// Tool: Get documents by query
     #[tool(
         description = "Retrieve a list of documents associated with a specific query.",
@@ -629,6 +628,7 @@ impl EsBaseTools {
             Content::json(documents)?,
         ]))
     }
+*/
 /* 
     /// Tool: Get project ID by name
 #[tool(
