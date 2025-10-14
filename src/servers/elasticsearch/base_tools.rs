@@ -88,13 +88,7 @@ struct GetShardsParams {
 struct DebugHeadersParams {}
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-struct SearchGseDocumentLibraryParams {
-    name_query: String,
-    summary_query: String,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-struct SearchGseListDocumentParams {
+struct GseSearchContentParams {
     name_query: String,
     summary_query: String,
 
@@ -103,13 +97,23 @@ struct SearchGseListDocumentParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-struct GetDocumentsParams {
-    /// Terme de recherche pour les documents
-    query: String,
+struct GseSearchListDocsParams {
+    name_query: String,
+    summary_query: String,
 
-    /// ID du site pour filtrer les documents (optionnel)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     site_id: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct GseSearchProjectIDParams {
+    /// Optional project number (exact match required)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    number_query: Option<String>,
+
+    /// Optional project name (fuzzy search allowed)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name_query: Option<String>,
 }
 
 #[tool_router]
@@ -468,7 +472,7 @@ impl EsBaseTools {
     async fn searchgsedocumentlibrary(
         &self,
         req_ctx: RequestContext<RoleServer>,
-        Parameters(SearchGseDocumentLibraryParams {name_query, summary_query }): Parameters<SearchGseDocumentLibraryParams>,
+        Parameters(GseSearchContentParams {name_query, summary_query, site_id}): Parameters<GseSearchContentParams>,
     ) -> Result<CallToolResult, rmcp::Error> {
         // Step 1: Retrieve the bearer token from the request context
         let token = Self::extract_bearer_token(&req_ctx)?;
@@ -488,7 +492,6 @@ impl EsBaseTools {
                 "access_control": access_control
             }
         });
-        println!("GSEDEV request: {}", gsedocs_request); // Debug log
 
         // Step 5: Send the query to Elasticsearch
         let gsedocs_response = es_client
@@ -504,7 +507,6 @@ impl EsBaseTools {
             .await;
 
         let gsedocs_data: Value = read_json(gsedocs_response).await?;
-        println!("GSEDEV response: {}", gsedocs_data); // Debug log
 
         // Step 6: Extract results and highlights
         let results = gsedocs_data
@@ -549,7 +551,7 @@ impl EsBaseTools {
     async fn get_documents_by_query(
         &self,
         req_ctx: RequestContext<RoleServer>,
-        Parameters(SearchGseListDocumentParams {name_query, summary_query, site_id}): Parameters<SearchGseListDocumentParams>,
+        Parameters(GseSearchListDocsParams {name_query, summary_query, site_id}): Parameters<GseSearchListDocsParams>,
     ) -> Result<CallToolResult, rmcp::Error> {
         // Step 1: Retrieve the bearer token and user email
         let token = Self::extract_bearer_token(&req_ctx)?;
@@ -567,7 +569,6 @@ impl EsBaseTools {
                 "access_control": access_control
             }
         });
-        println!("Search request: {}", search_request); // Debug log
 
         // Step 4: Send the query to Elasticsearch
         let search_response = es_client
@@ -583,7 +584,6 @@ impl EsBaseTools {
             .await;
 
         let search_data: Value = read_json(search_response).await?;
-        println!("Search response: {}", search_data); // Debug log
 
         // Step 5: Extract the list of documents
         let total_documents = search_data
@@ -636,6 +636,65 @@ impl EsBaseTools {
             Content::json(documents)?,
         ]))
     }
+    /* 
+    /// Tool: Get project ID by name
+    #[tool(
+    description = "Retrieve the ID of a project based on its name, number, or both. The search is restricted to sites (object_type = site). The project number must match exactly, even if surrounded by other characters, while the project name can have minor errors (fuzzy search).",
+    annotations(title = "Get Project ID by Name or Number (Sites Only)", read_only_hint = true)
+)]
+    async fn get_project_id(
+    &self,
+    req_ctx: RequestContext<RoleServer>,
+    Parameters(GseSearchProjectIDParams {name_query, number_query}): Parameters<GseSearchProjectIDParams>,
+) -> Result<CallToolResult, rmcp::Error> {
+    // Step 1: Retrieve the bearer token from the request context
+    let token = Self::extract_bearer_token(&req_ctx)?;
+    let email = Self::fetch_user_email(token).await?;
+    let es_client = self.es_client.get(req_ctx);
+    let access_control = self.fetch_access_control(&es_client, &email).await?;
+
+    let search_request = json!({
+            "params": {
+                "query_number": number_query,
+                "query_name": name_query,
+                "access_control": access_control
+            }
+        });
+
+    // Step 3: Send the query to Elasticsearch
+    let search_response = es_client
+        .transport()
+        .send(
+            elasticsearch::http::Method::Post,
+            "/_application/search_application/GSEDEV_GET_PROJECT_ID/_search", // Adjust the endpoint if necessary
+            http::HeaderMap::new(),
+            None::<&()>,
+            Some(elasticsearch::http::request::JsonBody::new(search_request)),
+            None,
+        )
+        .await;
+
+    let search_data: Value = read_json(search_response).await?;
+    println!("Search response: {}", search_data); // Debug log
+
+    // Step 4: Extract the project ID
+    let results = search_data
+        .get("hits")
+            .and_then(|hits| hits.get("hits"))
+            .ok_or_else(|| rmcp::Error::new(
+                ErrorCode::INTERNAL_ERROR,
+                "Failed to retrieve hits from GSEDEV response".to_string(),
+                None,
+            ))?;
+
+    // Step 5: Return the project ID
+    Ok(CallToolResult::success(vec![
+            Content::text("Search results:"),
+            Content::json(results)?,
+        ]))
+    }
+
+
 
     /* 
     /// Tool: Get documents by query
@@ -743,7 +802,7 @@ impl EsBaseTools {
 async fn get_project_id(
     &self,
     req_ctx: RequestContext<RoleServer>,
-    Parameters(SearchGseDocumentLibraryParams { user_query }): Parameters<SearchGseDocumentLibraryParams>,
+    Parameters(GseSearchContentParams { user_query }): Parameters<GseSearchContentParams>,
 ) -> Result<CallToolResult, rmcp::Error> {
     // Step 1: Retrieve the bearer token from the request context
     let token = Self::extract_bearer_token(&req_ctx)?;
