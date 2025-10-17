@@ -89,8 +89,8 @@ struct DebugHeadersParams {}
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct GseSearchContentParams {
-    name_query: String,
-    summary_query: String,
+    query_name: String,
+    query_summary: String,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     site_id: Option<String>,
@@ -98,8 +98,8 @@ struct GseSearchContentParams {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct GseSearchListDocsParams {
-    name_query: String,
-    summary_query: String,
+    query_name: String,
+    query_summary: String,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     site_id: Option<String>,
@@ -466,19 +466,47 @@ impl EsBaseTools {
     /// Tool: search the GSE document library
     /// Tool: Search the GSE document library
     #[tool(
-    description = "Search the GSE document library using name and summary queries, and return the full content of matching documents, including name, summary, and body.",
-    annotations(title = "Search GSE Document Library (Full Content)", read_only_hint = false)
-    )]
+    description = "
+<usecase>
+Effectuer une recherche dans la bibliothèque de documents GSE en spécifiant un ou plusieurs critères :
+- **query_name** : Correspond au titre du document, ou un mot/terme inclus dans ce titre.
+- **query_summary** : Correspond au résumé ou description succincte du contenu du document en 2 ou 3 phrases.
+Cet outil renvoie uniquement les **noms** des documents, leurs **liens** (webUrl) ainsi que leurs **résumés** et **contenu complet** pour les documents auxquels l'utilisateur a accès.
+L'outil renvoie deux catégories de résultats :
+1. **accessible_results** : Les 5 documents les plus pertinents auxquels l'utilisateur a accès (incluant nom, résumé, contenu complet).
+2. **general_results** : Les 5 meilleurs résultats globaux, qui incluent les documents accessibles (éventuellement en double avec **accessible_results**) et les **documents restreints** auxquels l'utilisateur n'a pas accès. Les documents restreints ne contiendront que leur titre.
+</usecase>
+
+<instructions>
+1. **Champs d'entrée** :
+   - Utilisez query_name pour cibler vos recherches par nom ou titre.
+   - Utilisez query_summary pour effectuer des recherches par résumé / description du document. 
+   - Ajoutez un site_id pour effectuer la recherche dans une bibliothèque spécifique (facultatif). Si omis, la recherche s'effectue dans l'ensemble des bibliothèques.
+
+2. **Structure de la réponse** :
+   - Les **accessible_results** contiennent des informations complètes sur les documents disponibles pour l'utilisateur (nom, résumé et contenu complet).
+   - Les **general_results** incluent les meilleurs résultats sur le plan global : certains documents de cette catégorie pourraient aussi être dans **accessible_results**, mais elle contiendra aussi des documents *restreints* (qui apparaîtront seulement avec leur titre).
+
+3. **Gestion des erreurs** :
+   En cas de problème, un message descriptif sera inclus dans la section error ou dans la structure de la réponse pour guider l'IA.
+</instructions>
+
+<notes>
+- Les **documents accessibles** et les **documents généraux** peuvent se recouper. Si un document est dans *general_results* mais pas dans *accessible_results*, l'utilisateur n'y a pas accès.
+- Le champ obligatoire query_name ou query_summary doit contenir au moins un élément.
+</notes>
+    ",
+    annotations(title = "Search GSE Document Library (Accessible & General Results)", read_only_hint = false))]
+
     async fn searchgsedocumentlibrary(
         &self,
         req_ctx: RequestContext<RoleServer>,
-        Parameters(GseSearchContentParams {name_query, summary_query, site_id}): Parameters<GseSearchContentParams>,
+        Parameters(GseSearchContentParams {query_name, query_summary, site_id}): Parameters<GseSearchContentParams>,
     ) -> Result<CallToolResult, rmcp::Error> {
         // Step 1: Retrieve the bearer token from the request context
         let token = Self::extract_bearer_token(&req_ctx)?;
         // Step 2: Fetch the user's email address
         let email = Self::fetch_user_email(token).await?;
-
         let es_client = self.es_client.get(req_ctx);
 
         // Step 3: Fetch access control
@@ -487,8 +515,8 @@ impl EsBaseTools {
         // Step 4: Build the search application request
         let gsedocs_request = json!({
             "params": {
-                "query_name": name_query,
-                "query_summary": summary_query,
+                "query_name": query_name,
+                "query_summary": query_summary,
                 "access_control": access_control
             }
         });
@@ -509,7 +537,7 @@ impl EsBaseTools {
         let gsedocs_data: Value = read_json(gsedocs_response).await?;
 
         // Step 6: Extract results and highlights
-        let results = gsedocs_data
+        let accessible_results = gsedocs_data
             .get("hits")
             .and_then(|hits| hits.get("hits"))
             .ok_or_else(|| rmcp::Error::new(
@@ -533,25 +561,87 @@ impl EsBaseTools {
                 "Failed to retrieve highlights from GSEDOCS response".to_string(),
                 None,
             ))?;
+        // Step 7: Query with no access control, returns only name and webUrl
+        let gsedocs_all_request = json!({
+            "params": {
+                "query_name": query_name,
+                "query_summary": query_summary
+            }
+        });
+
+        // Step 5: Send the query to Elasticsearch
+        let gsedocs_all_response = es_client
+            .transport()
+            .send(
+                elasticsearch::http::Method::Post,
+                "/_application/search_application/GSEDEV_GET_DOCS_ALL/_search",
+                http::HeaderMap::new(),
+                None::<&()>,
+                Some(elasticsearch::http::request::JsonBody::new(gsedocs_all_request)),
+                None,
+            )
+            .await;
+
+        let gsedocs_all_data: Value = read_json(gsedocs_all_response).await?;
+
+        // Step 6: Extract results and highlights
+        let general_results  = gsedocs_all_data
+            .get("hits")
+            .and_then(|hits| hits.get("hits"))
+            .ok_or_else(|| rmcp::Error::new(
+                ErrorCode::INTERNAL_ERROR,
+                "Failed to retrieve hits from GSEDEV response".to_string(),
+                None,
+            ))?;
 
         // Step 7: Return the results and highlights
         Ok(CallToolResult::success(vec![
-            Content::text("Search results:"),
-            Content::json(results)?,
-            Content::text("Highlights:"),
+            Content::text("Résultats accessibles :"),
+            Content::json(accessible_results)?,
+            Content::text("Points saillants :"),
             Content::json(highlights)?,
+            Content::text("Meilleurs résultats globaux (incluant documents restreints) :"),
+            Content::json(general_results)?,
         ]))
     }
 
     #[tool(
-    description = "Retrieve a list of documents matching name and summary queries, returning only the document names and links.",
-    annotations(title = "Get Documents by Query (Names and Links)", read_only_hint = true)
+    description = "
+    <usecase>
+    Récupérer une liste de documents à partir de critères spécifiques :
+    - **query_name** : Vous pouvez rechercher un document par son titre ou par un mot/phrases inclus dans ce titre.
+    - **query_summary** : Vous pouvez chercher un document par des mots-clés extraits de son résumé ou d'une description succincte.
+    Cet outil renvoie uniquement les **noms** des documents et leurs **liens** (webUrl) associés.
+    Priorise cet outil quand l'utilisateur veut simplement lister et pas le contenu complet.
+    </usecase>
+
+    <instructions>
+    1. Fournissez au minimum un *champ d'entrée* entre :
+    - query_name: Nom ou titre partiellement ou totalement.
+    - OU query_summary: Phrases descriptives pour rechercher dans le résumé du contenu.
+    - Facultatif : site_id pour viser une bibliothèque/sous-domaine spécifique. Si omis, la recherche couvre tous les sites.
+    2. La réponse inclura :
+    - Le **nombre total de documents** correspondant à la recherche.
+    - Une **liste des documents** avec : 
+        - name : Le titre du document
+        - webUrl : Le lien pour accéder au document
+    3. Si aucun document ne correspond, une réponse vide est retournée avec un message d'indication.
+    4. En cas de problème (ex. paramètres), un message d'erreur sera renvoyé pour guider les corrections nécessaires.
+    </instructions>
+
+    <notes>
+    - Seuls les noms et les liens des documents sont inclus dans les résultats. Aucun autre contenu ou détails n'est renvoyé via cet outil.
+    - Ce service est limité à la recherche et à l'énumération : l'accès au document dépend des autorisations utilisateur.
+    </notes>
+        ",
+        annotations(title = "Get Documents by Query (Names and Links)", read_only_hint = true)
     )]
 
+     
     async fn get_documents_by_query(
         &self,
         req_ctx: RequestContext<RoleServer>,
-        Parameters(GseSearchListDocsParams {name_query, summary_query, site_id}): Parameters<GseSearchListDocsParams>,
+        Parameters(GseSearchListDocsParams {query_name, query_summary, site_id}): Parameters<GseSearchListDocsParams>,
     ) -> Result<CallToolResult, rmcp::Error> {
         // Step 1: Retrieve the bearer token and user email
         let token = Self::extract_bearer_token(&req_ctx)?;
@@ -564,8 +654,8 @@ impl EsBaseTools {
         // Step 3: Build the search application request
         let search_request = json!({
             "params": {
-                "query_name": name_query,
-                "query_summary": summary_query,
+                "query_name": query_name,
+                "query_summary": query_summary,
                 "access_control": access_control
             }
         });
@@ -636,7 +726,10 @@ impl EsBaseTools {
             Content::json(documents)?,
         ]))
     }
-    /* 
+
+
+    
+/* 
     /// Tool: Get project ID by name
     #[tool(
     description = "Retrieve the ID of a project based on its name, number, or both. The search is restricted to sites (object_type = site). The project number must match exactly, even if surrounded by other characters, while the project name can have minor errors (fuzzy search).",
@@ -696,7 +789,7 @@ impl EsBaseTools {
 
 
 
-    /* 
+    
     /// Tool: Get documents by query
     #[tool(
         description = "Retrieve a list of documents associated with a specific query.",
