@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 use crate::servers::elasticsearch::{EsClientProvider, read_json};
-//use elasticsearch::cat::{CatIndicesParts, CatShardsParts};
-//use elasticsearch::indices::IndicesGetMappingParts;
+use elasticsearch::cat::{CatIndicesParts, CatShardsParts};
+use elasticsearch::indices::IndicesGetMappingParts;
 use elasticsearch::{Elasticsearch};//, SearchParts};
 use indexmap::IndexMap;
 use rmcp::handler::server::tool::{Parameters, ToolRouter};
@@ -90,31 +90,12 @@ struct DebugHeadersParams {}
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct GseSearchContentParams {
     query_name: String,
-    query_summary: String,
-
+    query_text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    site_id: Option<String>,
+    site_name: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-struct GseSearchListDocsParams {
-    query_name: String,
-    query_summary: String,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    site_id: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-struct GseSearchProjectIDParams {
-    /// Optional project number (exact match required)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    number_query: Option<String>,
-
-    /// Optional project name (fuzzy search allowed)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    name_query: Option<String>,
-}
 
 #[tool_router]
 impl EsBaseTools {
@@ -212,7 +193,7 @@ impl EsBaseTools {
             .cloned()
             .ok_or_else(|| rmcp::Error::new(
                 ErrorCode::INTERNAL_ERROR,
-                "Failed to retrieve access_control from GSEDOCSACL response".to_string(),
+                "Failed to retrieve access_control from GSEDEVACL response".to_string(),
                 None,
             ))
     }
@@ -220,7 +201,7 @@ impl EsBaseTools {
 
     //---------------------------------------------------------------------------------------------
     /// Tool: list indices
-    /*
+    
     #[tool(
         description = "List all available Elasticsearch indices",
         annotations(title = "List ES indices", read_only_hint = true)
@@ -246,7 +227,7 @@ impl EsBaseTools {
             Content::json(response)?,
         ]))
     }
-    */
+    
     //---------------------------------------------------------------------------------------------
     /// Tool: get mappings for an index
     /*
@@ -467,56 +448,49 @@ impl EsBaseTools {
     /// Tool: Search the GSE document library
     #[tool(
     description = "
-<usecase>
-Effectuer une recherche dans la bibliothèque de documents GSE en spécifiant un ou plusieurs critères :
-- **query_name** : Correspond au titre du document, ou un mot/terme inclus dans ce titre.
-- **query_summary** : Correspond au résumé ou description succincte du contenu du document en 2 ou 3 phrases.
-Cet outil renvoie uniquement les **noms** des documents, leurs **liens** (webUrl) ainsi que leurs **résumés** et **contenu complet** pour les documents auxquels l'utilisateur a accès.
-L'outil renvoie deux catégories de résultats :
-1. **accessible_results** : Les 5 documents les plus pertinents auxquels l'utilisateur a accès (incluant nom, résumé, contenu complet).
-2. **general_results** : Les 5 meilleurs résultats globaux, qui incluent les documents accessibles (éventuellement en double avec **accessible_results**) et les **documents restreints** auxquels l'utilisateur n'a pas accès. Les documents restreints ne contiendront que leur titre.
-</usecase>
+    <usecase>
+    Retrieve the full content (body) of documents from the GSE document library to answer general questions or provide detailed information. This tool is particularly useful for queries like 'What is the procedure for X?' or 'Summarize the document for me.'
+    </usecase>
 
-<instructions>
-1. **Champs d'entrée** :
-   - Utilisez query_name pour cibler vos recherches par nom ou titre.
-   - Utilisez query_summary pour effectuer des recherches par résumé / description du document. 
-   - Ajoutez un site_id pour effectuer la recherche dans une bibliothèque spécifique (facultatif). Si omis, la recherche s'effectue dans l'ensemble des bibliothèques.
+    <inputs>
+    - **query_name**: The title of the document or a word/term included in the title.
+    - **query_summary**: A brief description or summary of the document content (2-3 sentences).
+    - **site_id** (optional): Restrict the search to a specific library. If omitted, the search will cover all libraries.
+    </inputs>
 
-2. **Structure de la réponse** :
-   - Les **accessible_results** contiennent des informations complètes sur les documents disponibles pour l'utilisateur (nom, résumé et contenu complet).
-   - Les **general_results** incluent les meilleurs résultats sur le plan global : certains documents de cette catégorie pourraient aussi être dans **accessible_results**, mais elle contiendra aussi des documents *restreints* (qui apparaîtront seulement avec leur titre).
-
-3. **Gestion des erreurs** :
-   En cas de problème, un message descriptif sera inclus dans la section error ou dans la structure de la réponse pour guider l'IA.
-</instructions>
-
-<notes>
-- Les **documents accessibles** et les **documents généraux** peuvent se recouper. Si un document est dans *general_results* mais pas dans *accessible_results*, l'utilisateur n'y a pas accès.
-- Le champ obligatoire query_name ou query_summary doit contenir au moins un élément.
-</notes>
+    <example>
+    - What is the procedure for submitting a project proposal?
+    - Summarize the document titled Project X Guidelines.
+    - Retrieve the full content of documents related to Digital Realty in the Marseille site.
+    </example>
     ",
-    annotations(title = "Search GSE Document Library (Accessible & General Results)", read_only_hint = false))]
+    annotations(title = "Retrieve Full Document Content for General Questions", read_only_hint = false))]
 
-    async fn searchgsedocumentlibrary(
+    async fn searchgsecontent(
         &self,
         req_ctx: RequestContext<RoleServer>,
-        Parameters(GseSearchContentParams {query_name, query_summary, site_id}): Parameters<GseSearchContentParams>,
+        Parameters(GseSearchContentParams {query_name, query_text, site_name}): Parameters<GseSearchContentParams>,
     ) -> Result<CallToolResult, rmcp::Error> {
-        // Step 1: Retrieve the bearer token from the request context
+
+        // Retrieve the bearer token from the request context
         let token = Self::extract_bearer_token(&req_ctx)?;
-        // Step 2: Fetch the user's email address
+
+        // Fetch the user's email address
         let email = Self::fetch_user_email(token).await?;
         let es_client = self.es_client.get(req_ctx);
 
-        // Step 3: Fetch access control
+        // Fetch access control
         let access_control = self.fetch_access_control(&es_client, &email).await?;
 
+        // Find the site id, if a site name is provided
+
+
+        
         // Step 4: Build the search application request
         let gsedocs_request = json!({
             "params": {
                 "query_name": query_name,
-                "query_summary": query_summary,
+                "query_text": query_text,
                 "access_control": access_control
             }
         });
@@ -526,7 +500,7 @@ L'outil renvoie deux catégories de résultats :
             .transport()
             .send(
                 elasticsearch::http::Method::Post,
-                "/_application/search_application/GSEDEV_GET_CONTENT/_search",
+                "/_application/search_application/search_gsedev/_search",
                 http::HeaderMap::new(),
                 None::<&()>,
                 Some(elasticsearch::http::request::JsonBody::new(gsedocs_request)),
@@ -542,7 +516,7 @@ L'outil renvoie deux catégories de résultats :
             .and_then(|hits| hits.get("hits"))
             .ok_or_else(|| rmcp::Error::new(
                 ErrorCode::INTERNAL_ERROR,
-                "Failed to retrieve hits from GSEDEV response".to_string(),
+                "Failed to retrieve hits from search_gsedev (with access) response".to_string(),
                 None,
             ))?;
 
@@ -558,14 +532,16 @@ L'outil renvoie deux catégories de résultats :
             })
             .ok_or_else(|| rmcp::Error::new(
                 ErrorCode::INTERNAL_ERROR,
-                "Failed to retrieve highlights from GSEDOCS response".to_string(),
+                "Failed to retrieve highlights from search_gsedev (with access) response".to_string(),
                 None,
             ))?;
         // Step 7: Query with no access control, returns only name and webUrl
         let gsedocs_all_request = json!({
             "params": {
                 "query_name": query_name,
-                "query_summary": query_summary
+                "query_text": query_text,
+                "include_body": false,
+                "include_access_rights": false
             }
         });
 
@@ -574,7 +550,7 @@ L'outil renvoie deux catégories de résultats :
             .transport()
             .send(
                 elasticsearch::http::Method::Post,
-                "/_application/search_application/GSEDEV_GET_DOCS_ALL/_search",
+                "/_application/search_application/search_gsedev/_search",
                 http::HeaderMap::new(),
                 None::<&()>,
                 Some(elasticsearch::http::request::JsonBody::new(gsedocs_all_request)),
@@ -590,58 +566,47 @@ L'outil renvoie deux catégories de résultats :
             .and_then(|hits| hits.get("hits"))
             .ok_or_else(|| rmcp::Error::new(
                 ErrorCode::INTERNAL_ERROR,
-                "Failed to retrieve hits from GSEDEV response".to_string(),
+                "Failed to retrieve hits from search_gsedev (without access) response".to_string(),
                 None,
             ))?;
 
         // Step 7: Return the results and highlights
         Ok(CallToolResult::success(vec![
-            Content::text("Résultats accessibles :"),
+            Content::text("Accessible results :"),
             Content::json(accessible_results)?,
-            Content::text("Points saillants :"),
+            Content::text("Highlights :"),
             Content::json(highlights)?,
-            Content::text("Meilleurs résultats globaux (incluant documents restreints) :"),
+            Content::text("Best global results :"),
             Content::json(general_results)?,
         ]))
     }
 
+
     #[tool(
     description = "
     <usecase>
-    Récupérer une liste de documents à partir de critères spécifiques :
-    - **query_name** : Vous pouvez rechercher un document par son titre ou par un mot/phrases inclus dans ce titre.
-    - **query_summary** : Vous pouvez chercher un document par des mots-clés extraits de son résumé ou d'une description succincte.
-    Cet outil renvoie uniquement les **noms** des documents et leurs **liens** (webUrl) associés.
-    Priorise cet outil quand l'utilisateur veut simplement lister et pas le contenu complet.
+    Retrieve a list of documents from the GSE document library based on specific search criteria. This tool is useful for queries like 'Find me a document about X', 'List all documents related to Y', or 'Which documents mention Z?'. The tool provides only the document names and their links (webUrl), without the full content.
     </usecase>
 
-    <instructions>
-    1. Fournissez au minimum un *champ d'entrée* entre :
-    - query_name: Nom ou titre partiellement ou totalement.
-    - OU query_summary: Phrases descriptives pour rechercher dans le résumé du contenu.
-    - Facultatif : site_id pour viser une bibliothèque/sous-domaine spécifique. Si omis, la recherche couvre tous les sites.
-    2. La réponse inclura :
-    - Le **nombre total de documents** correspondant à la recherche.
-    - Une **liste des documents** avec : 
-        - name : Le titre du document
-        - webUrl : Le lien pour accéder au document
-    3. Si aucun document ne correspond, une réponse vide est retournée avec un message d'indication.
-    4. En cas de problème (ex. paramètres), un message d'erreur sera renvoyé pour guider les corrections nécessaires.
-    </instructions>
+    <inputs>
+    - **query_name**: The title of the document or a word/term included in the title.
+    - **query_summary**: A brief description or summary of the document content (2-3 sentences).
+    - **site_id** (optional): Restrict the search to a specific library. If omitted, the search will cover all libraries.
+    </inputs>
 
-    <notes>
-    - Seuls les noms et les liens des documents sont inclus dans les résultats. Aucun autre contenu ou détails n'est renvoyé via cet outil.
-    - Ce service est limité à la recherche et à l'énumération : l'accès au document dépend des autorisations utilisateur.
-    </notes>
-        ",
-        annotations(title = "Get Documents by Query (Names and Links)", read_only_hint = true)
-    )]
+    <example>
+    - Find documents with the title Project .'
+    - List all documents summarizing data center construction.
+    - Which documents mention Digital Realty in the Marseille site?
+    </example>
+    ",
+    annotations(title = "List Documents from GSE Library (Names and Links)", read_only_hint = true))]
 
      
-    async fn get_documents_by_query(
+    async fn searchgsedocs(
         &self,
         req_ctx: RequestContext<RoleServer>,
-        Parameters(GseSearchListDocsParams {query_name, query_summary, site_id}): Parameters<GseSearchListDocsParams>,
+        Parameters(GseSearchContentParams {query_name, query_text, site_name}): Parameters<GseSearchContentParams>,
     ) -> Result<CallToolResult, rmcp::Error> {
         // Step 1: Retrieve the bearer token and user email
         let token = Self::extract_bearer_token(&req_ctx)?;
@@ -655,8 +620,10 @@ L'outil renvoie deux catégories de résultats :
         let search_request = json!({
             "params": {
                 "query_name": query_name,
-                "query_summary": query_summary,
-                "access_control": access_control
+                "query_text": query_text,
+                "access_control": access_control,
+                "include_body": false,
+                "size" : 20
             }
         });
 
@@ -665,7 +632,7 @@ L'outil renvoie deux catégories de résultats :
             .transport()
             .send(
                 elasticsearch::http::Method::Post,
-                "/_application/search_application/GSEDEV_GET_DOCS/_search", // Use the search application endpoint
+                "/_application/search_application/search_gsedev/_search", // Use the search application endpoint
                 http::HeaderMap::new(),
                 None::<&()>,
                 Some(elasticsearch::http::request::JsonBody::new(search_request)),
@@ -727,332 +694,13 @@ L'outil renvoie deux catégories de résultats :
         ]))
     }
 
-
     
-/* 
-    /// Tool: Get project ID by name
-    #[tool(
-    description = "Retrieve the ID of a project based on its name, number, or both. The search is restricted to sites (object_type = site). The project number must match exactly, even if surrounded by other characters, while the project name can have minor errors (fuzzy search).",
-    annotations(title = "Get Project ID by Name or Number (Sites Only)", read_only_hint = true)
-)]
-    async fn get_project_id(
-    &self,
-    req_ctx: RequestContext<RoleServer>,
-    Parameters(GseSearchProjectIDParams {name_query, number_query}): Parameters<GseSearchProjectIDParams>,
-) -> Result<CallToolResult, rmcp::Error> {
-    // Step 1: Retrieve the bearer token from the request context
-    let token = Self::extract_bearer_token(&req_ctx)?;
-    let email = Self::fetch_user_email(token).await?;
-    let es_client = self.es_client.get(req_ctx);
-    let access_control = self.fetch_access_control(&es_client, &email).await?;
-
-    let search_request = json!({
-            "params": {
-                "query_number": number_query,
-                "query_name": name_query,
-                "access_control": access_control
-            }
-        });
-
-    // Step 3: Send the query to Elasticsearch
-    let search_response = es_client
-        .transport()
-        .send(
-            elasticsearch::http::Method::Post,
-            "/_application/search_application/GSEDEV_GET_PROJECT_ID/_search", // Adjust the endpoint if necessary
-            http::HeaderMap::new(),
-            None::<&()>,
-            Some(elasticsearch::http::request::JsonBody::new(search_request)),
-            None,
-        )
-        .await;
-
-    let search_data: Value = read_json(search_response).await?;
-    println!("Search response: {}", search_data); // Debug log
-
-    // Step 4: Extract the project ID
-    let results = search_data
-        .get("hits")
-            .and_then(|hits| hits.get("hits"))
-            .ok_or_else(|| rmcp::Error::new(
-                ErrorCode::INTERNAL_ERROR,
-                "Failed to retrieve hits from GSEDEV response".to_string(),
-                None,
-            ))?;
-
-    // Step 5: Return the project ID
-    Ok(CallToolResult::success(vec![
-            Content::text("Search results:"),
-            Content::json(results)?,
-        ]))
-    }
-
-
-
-    
-    /// Tool: Get documents by query
-    #[tool(
-        description = "Retrieve a list of documents associated with a specific query.",
-        annotations(title = "Get Documents by Query", read_only_hint = true)
-    )]
-    async fn get_documents_by_query(
-        &self,
-        req_ctx: RequestContext<RoleServer>,
-        Parameters(GetDocumentsByQueryParams { query }): Parameters<GetDocumentsByQueryParams>,
-    ) -> Result<CallToolResult, rmcp::Error> {
-        // Step 1: Retrieve the bearer token and user email
-        let token = Self::extract_bearer_token(&req_ctx)?;
-        let email = Self::fetch_user_email(token).await?;
-        let es_client = self.es_client.get(req_ctx);
-
-        // Step 2: Fetch access control
-        let access_control = self.fetch_access_control(&es_client, &email).await?;
-
-        // Step 3: Build the search application request
-        let search_request = json!({
-            "params": {
-                "query_content": query,
-                "search_content": true,
-                "access_control": access_control
-            }
-        });
-        println!("Search request: {}", search_request); // Debug log
-
-        // Step 4: Send the query to Elasticsearch
-        let search_response = es_client
-            .transport()
-            .send(
-                elasticsearch::http::Method::Post,
-                "/_application/search_application/GSEDEV/_search", // Use the search application endpoint
-                http::HeaderMap::new(),
-                None::<&()>,
-                Some(elasticsearch::http::request::JsonBody::new(search_request)),
-                None,
-            )
-            .await;
-
-        let search_data: Value = read_json(search_response).await?;
-        println!("Search response: {}", search_data); // Debug log
-
-        // Step 5: Extract the list of documents
-        let total_documents = search_data
-            .get("hits")
-            .and_then(|hits| hits.get("total"))
-            .and_then(|total| total.get("value"))
-            .and_then(Value::as_u64)
-            .ok_or_else(|| rmcp::Error::new(
-                ErrorCode::INTERNAL_ERROR,
-                "Failed to retrieve total document count from search response".to_string(),
-                None,
-            ))?;
-
-        let documents = search_data
-            .get("hits")
-            .and_then(|hits| hits.get("hits"))
-            .and_then(|hits_array| hits_array.as_array())
-            .map(|array| {
-                array
-                    .iter()
-                    .filter_map(|hit| {
-                        let name = hit
-                            .get("_source")
-                            .and_then(|source| source.get("name"))
-                            .and_then(Value::as_str)
-                            .map(String::from);
-
-                        let web_url = hit
-                            .get("_source")
-                            .and_then(|source| source.get("webUrl"))
-                            .and_then(Value::as_str)
-                            .map(String::from);
-
-                        match (name, web_url) {
-                            (Some(name), Some(web_url)) => Some(json!({ "name": name, "webUrl": web_url })),
-                            _ => None,
-                        }
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .ok_or_else(|| rmcp::Error::new(
-                ErrorCode::INTERNAL_ERROR,
-                "Failed to retrieve documents from search response".to_string(),
-                None,
-            ))?;
-
-        // Step 6: Return the total count and the list of documents
-        Ok(CallToolResult::success(vec![
-            Content::text(format!("Total documents matching the query: {}", total_documents)),
-            Content::json(documents)?,
-        ]))
-    }
-*/
-/* 
-    /// Tool: Get project ID by name
-#[tool(
-    description = "Retrieve the ID of a project based on its name or number.",
-    annotations(title = "Get Project ID", read_only_hint = true)
-)]
-async fn get_project_id(
-    &self,
-    req_ctx: RequestContext<RoleServer>,
-    Parameters(GseSearchContentParams { user_query }): Parameters<GseSearchContentParams>,
-) -> Result<CallToolResult, rmcp::Error> {
-    // Step 1: Retrieve the bearer token from the request context
-    let token = Self::extract_bearer_token(&req_ctx)?;
-    let email = Self::fetch_user_email(token).await?;
-    let es_client = self.es_client.get(req_ctx);
-    let access_control = self.fetch_access_control(&es_client, &email).await?;
-
-    // Step 2: Build the Elasticsearch query
-    let search_request = json!({
-        "query": {
-            "bool": {
-                "must": [
-                    { "term": { "object_type": "site" } },
-                    { "match": { "name": user_query } }
-                ]
-            }
-        },
-        "size": 1 // Limit to one result
-    });
-    println!("Search request: {}", search_request); // Debug log
-
-    // Step 3: Send the query to Elasticsearch
-    let search_response = es_client
-        .transport()
-        .send(
-            elasticsearch::http::Method::Post,
-            "/content-sharepoint-gse-prod/_search", // Adjust the endpoint if necessary
-            http::HeaderMap::new(),
-            None::<&()>,
-            Some(elasticsearch::http::request::JsonBody::new(search_request)),
-            None,
-        )
-        .await;
-
-    let search_data: Value = read_json(search_response).await?;
-    println!("Search response: {}", search_data); // Debug log
-
-    // Step 4: Extract the project ID
-    let project_id = search_data
-        .get("hits")
-        .and_then(|hits| hits.get("hits"))
-        .and_then(|hits_array| hits_array.as_array())
-        .and_then(|array| array.first())
-        .and_then(|first_hit| first_hit.get("_source"))
-        .and_then(|source| source.get("id"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| rmcp::Error::new(
-            ErrorCode::INTERNAL_ERROR,
-            "Failed to retrieve project ID from search response".to_string(),
-            None,
-        ))?;
-
-    // Step 5: Return the project ID
-    Ok(CallToolResult::success(vec![
-        Content::text(format!("Project ID: {}", project_id)),
-    ]))
 }
-/// Tool: Get documents by matching a term, optionally filtered by siteId
-#[tool(
-    description = "Retrieve a list of documents matching a term, optionally filtered by a specific siteId.",
-    annotations(title = "Get Documents", read_only_hint = true)
-)]
-async fn get_documents(
-    &self,
-    req_ctx: RequestContext<RoleServer>,
-    Parameters(GetDocumentsParams { query, site_id }): Parameters<GetDocumentsParams>,
-) -> Result<CallToolResult, rmcp::Error> {
-    let token = Self::extract_bearer_token(&req_ctx)?;
-    let email = Self::fetch_user_email(token).await?;
-    let es_client = self.es_client.get(req_ctx);
-    let access_control = self.fetch_access_control(&es_client, &email).await?;
 
-    let mut params = json!({
-            "query_name": query,
-            "name_field": "name",
-            "search_name": true, // Enable search by name
-            "search_content": false,
-            "access_control": access_control
-        });
 
-        // Add siteId filter if provided
-        if let Some(site_id) = site_id {
-            params["parentReference.siteId"] = json!(site_id);
-        }
 
-        let search_request = json!({ "params": params });
-        println!("Search request: {}", search_request); // Debug log
 
-        // Step 3: Send the query to Elasticsearch
-    let search_response = es_client
-        .transport()
-        .send(
-            elasticsearch::http::Method::Post,
-            "/_application/search_application/GSEDOCS/_search", // Adjust the endpoint if necessary
-            http::HeaderMap::new(),
-            None::<&()>,
-            Some(elasticsearch::http::request::JsonBody::new(search_request)),
-            None,
-        )
-        .await;
 
-    let search_data: Value = read_json(search_response).await?;
-    println!("Search response: {}", search_data); // Debug log
-
-    // Step 4: Extract the list of documents
-    let total_documents = search_data
-        .get("hits")
-        .and_then(|hits| hits.get("total"))
-        .and_then(|total| total.get("value"))
-        .and_then(Value::as_u64)
-        .ok_or_else(|| rmcp::Error::new(
-            ErrorCode::INTERNAL_ERROR,
-            "Failed to retrieve total document count from search response".to_string(),
-            None,
-        ))?;
-
-    let documents = search_data
-        .get("hits")
-        .and_then(|hits| hits.get("hits"))
-        .and_then(|hits_array| hits_array.as_array())
-        .map(|array| {
-            array
-                .iter()
-                .filter_map(|hit| {
-                    let name = hit
-                        .get("_source")
-                        .and_then(|source| source.get("name"))
-                        .and_then(Value::as_str)
-                        .map(String::from);
-
-                    let web_url = hit
-                        .get("_source")
-                        .and_then(|source| source.get("webUrl"))
-                        .and_then(Value::as_str)
-                        .map(String::from);
-
-                    match (name, web_url) {
-                        (Some(name), Some(web_url)) => Some(json!({ "name": name, "webUrl": web_url })),
-                        _ => None,
-                    }
-                })
-                .collect::<Vec<_>>()
-        })
-        .ok_or_else(|| rmcp::Error::new(
-            ErrorCode::INTERNAL_ERROR,
-            "Failed to retrieve documents from search response".to_string(),
-            None,
-        ))?;
-
-    // Step 5: Return the list of documents
-    Ok(CallToolResult::success(vec![
-        Content::text(format!("Total documents matching the query: {}", total_documents)),
-        Content::json(documents)?,
-    ]))
-}
-*/
-}
 #[tool_handler]
 impl ServerHandler for EsBaseTools {
     fn get_info(&self) -> ServerInfo {
