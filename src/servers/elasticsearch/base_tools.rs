@@ -168,7 +168,7 @@ impl EsBaseTools {
             .transport()
             .send(
                 elasticsearch::http::Method::Post,
-                "/_application/search_application/GSEDEVACL/_search",
+                "/_application/search_application/GSEACL/_search",
                 http::HeaderMap::new(),
                 None::<&()>,
                 Some(elasticsearch::http::request::JsonBody::new(acl_request)),
@@ -193,7 +193,7 @@ impl EsBaseTools {
             .cloned()
             .ok_or_else(|| rmcp::Error::new(
                 ErrorCode::INTERNAL_ERROR,
-                "Failed to retrieve access_control from GSEDEVACL response".to_string(),
+                "Failed to retrieve access_control from GSEACL response".to_string(),
                 None,
             ))
     }
@@ -500,7 +500,7 @@ impl EsBaseTools {
             .transport()
             .send(
                 elasticsearch::http::Method::Post,
-                "/_application/search_application/search_gsedev/_search",
+                "/_application/search_application/GSEDOCS/_search",
                 http::HeaderMap::new(),
                 None::<&()>,
                 Some(elasticsearch::http::request::JsonBody::new(gsedocs_request)),
@@ -516,7 +516,7 @@ impl EsBaseTools {
             .and_then(|hits| hits.get("hits"))
             .ok_or_else(|| rmcp::Error::new(
                 ErrorCode::INTERNAL_ERROR,
-                "Failed to retrieve hits from search_gsedev (with access) response".to_string(),
+                "Failed to retrieve hits from GSEDOCS (with access) response".to_string(),
                 None,
             ))?;
 
@@ -532,7 +532,7 @@ impl EsBaseTools {
             })
             .ok_or_else(|| rmcp::Error::new(
                 ErrorCode::INTERNAL_ERROR,
-                "Failed to retrieve highlights from search_gsedev (with access) response".to_string(),
+                "Failed to retrieve highlights from GSEDOCS (with access) response".to_string(),
                 None,
             ))?;
         // Step 7: Query with no access control, returns only name and webUrl
@@ -550,7 +550,7 @@ impl EsBaseTools {
             .transport()
             .send(
                 elasticsearch::http::Method::Post,
-                "/_application/search_application/search_gsedev/_search",
+                "/_application/search_application/GSEDOCS/_search",
                 http::HeaderMap::new(),
                 None::<&()>,
                 Some(elasticsearch::http::request::JsonBody::new(gsedocs_all_request)),
@@ -566,7 +566,7 @@ impl EsBaseTools {
             .and_then(|hits| hits.get("hits"))
             .ok_or_else(|| rmcp::Error::new(
                 ErrorCode::INTERNAL_ERROR,
-                "Failed to retrieve hits from search_gsedev (without access) response".to_string(),
+                "Failed to retrieve hits from GSEDOCS (without access) response".to_string(),
                 None,
             ))?;
 
@@ -632,7 +632,7 @@ impl EsBaseTools {
             .transport()
             .send(
                 elasticsearch::http::Method::Post,
-                "/_application/search_application/search_gsedev/_search", // Use the search application endpoint
+                "/_application/search_application/GSEDOCS/_search", // Use the search application endpoint
                 http::HeaderMap::new(),
                 None::<&()>,
                 Some(elasticsearch::http::request::JsonBody::new(search_request)),
