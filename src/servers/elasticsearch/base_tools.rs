@@ -462,6 +462,9 @@ impl EsBaseTools {
     - What is the procedure for submitting a project proposal?
     - Summarize the document titled Project X Guidelines.
     - Retrieve the full content of documents related to Digital Realty in the Marseille site.
+    - Why can't we use X technology in GSE ? 
+    - Provide details on the data center construction process.
+    - Explain the procedure described in the Project Y Guidelines document.
     </example>
     ",
     annotations(title = "Retrieve Full Document Content for General Questions", read_only_hint = false))]
