@@ -92,7 +92,7 @@ struct GseSearchContentParams {
     query_name: String,
     query_text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    site_name: Option<String>,
+    project_name: Option<String>,
 }
 
 
@@ -455,7 +455,7 @@ impl EsBaseTools {
     <inputs>
     - **query_name**: The title of the document or a word/term included in the title.
     - **query_summary**: A brief description or summary of the document content (2-3 sentences).
-    - **site_id** (optional): Restrict the search to a specific library. If omitted, the search will cover all libraries.
+    - **project_name** (optional): Restrict the search to a specific project. If omitted, the search will cover all libraries.
     </inputs>
 
     <example>
@@ -472,7 +472,7 @@ impl EsBaseTools {
     async fn searchgsecontent(
         &self,
         req_ctx: RequestContext<RoleServer>,
-        Parameters(GseSearchContentParams {query_name, query_text, site_name}): Parameters<GseSearchContentParams>,
+        Parameters(GseSearchContentParams {query_name, query_text, project_name}): Parameters<GseSearchContentParams>,
     ) -> Result<CallToolResult, rmcp::Error> {
 
         // Retrieve the bearer token from the request context
@@ -485,16 +485,54 @@ impl EsBaseTools {
         // Fetch access control
         let access_control = self.fetch_access_control(&es_client, &email).await?;
 
-        // Find the site id, if a site name is provided
+        let include_access_rights = if email.contains("lpotin") || email.contains("jnguyen") {
+            false
+        } else {
+            true
+        };
 
+        // Find the project website, if a project name is provided 
+        let gsedocs_request = json!({
+            "params": {
+                "query_name": project_name,
+                "query_text": query_text,
+                "include_body": false,
+                "access_control": access_control,
+                "size" : 1,
+                "object_type": "site"
+            }
+        });
 
-        
+        let gsedocs_response = es_client
+            .transport()
+            .send(
+                elasticsearch::http::Method::Post,
+                "/_application/search_application/GSEDOCS/_search",
+                http::HeaderMap::new(),
+                None::<&()>,
+                Some(elasticsearch::http::request::JsonBody::new(gsedocs_request)),
+                None,
+            )
+            .await;
+        let gsedocs_data: Value = read_json(gsedocs_response).await?;
+
+        // Extract the site URL from the response
+        let site_url = gsedocs_data
+            .get("hits")
+            .and_then(|hits| hits.get("hits"))
+            .and_then(|hits_array| hits_array.as_array())
+            .and_then(|array| array.first())
+            .and_then(|first_hit| first_hit.get("_source"))
+            .and_then(|source| source.get("webUrl"))
+            .and_then(Value::as_str)
+            .map(String::from);
         // Step 4: Build the search application request
         let gsedocs_request = json!({
             "params": {
                 "query_name": query_name,
                 "query_text": query_text,
-                "access_control": access_control
+                "access_control": access_control,
+                "include_access_rights": include_access_rights
             }
         });
 
@@ -544,7 +582,8 @@ impl EsBaseTools {
                 "query_name": query_name,
                 "query_text": query_text,
                 "include_body": false,
-                "include_access_rights": false
+                "include_access_rights": include_access_rights,
+                "match_url": site_url
             }
         });
 
@@ -609,7 +648,7 @@ impl EsBaseTools {
     async fn searchgsedocs(
         &self,
         req_ctx: RequestContext<RoleServer>,
-        Parameters(GseSearchContentParams {query_name, query_text, site_name}): Parameters<GseSearchContentParams>,
+        Parameters(GseSearchContentParams {query_name, query_text, project_name}): Parameters<GseSearchContentParams>,
     ) -> Result<CallToolResult, rmcp::Error> {
         // Step 1: Retrieve the bearer token and user email
         let token = Self::extract_bearer_token(&req_ctx)?;
@@ -619,12 +658,20 @@ impl EsBaseTools {
         // Step 2: Fetch access control
         let access_control = self.fetch_access_control(&es_client, &email).await?;
 
+        let include_access_rights = if email.contains("lpotin") || email.contains("jnguyen") {
+            false
+        } else {
+            true
+        };
+
+
         // Step 3: Build the search application request
         let search_request = json!({
             "params": {
                 "query_name": query_name,
                 "query_text": query_text,
                 "access_control": access_control,
+                "include_access_rights": include_access_rights,
                 "include_body": false,
                 "size" : 20
             }
