@@ -531,6 +531,7 @@ impl EsBaseTools {
             "params": {
                 "query_name": query_name,
                 "query_text": query_text,
+                "include_body": true,
                 "access_control": access_control,
                 "include_access_rights": include_access_rights
             }
@@ -541,7 +542,7 @@ impl EsBaseTools {
             .transport()
             .send(
                 elasticsearch::http::Method::Post,
-                "/_application/search_application/GSEDOCS/_search",
+                "/_application/search_application/GSE_DEVHYBRID/_search",
                 http::HeaderMap::new(),
                 None::<&()>,
                 Some(elasticsearch::http::request::JsonBody::new(gsedocs_request)),
@@ -592,7 +593,7 @@ impl EsBaseTools {
             .transport()
             .send(
                 elasticsearch::http::Method::Post,
-                "/_application/search_application/GSEDOCS/_search",
+                "/_application/search_application/GSE_DEVHYBRID/_search",
                 http::HeaderMap::new(),
                 None::<&()>,
                 Some(elasticsearch::http::request::JsonBody::new(gsedocs_all_request)),
@@ -682,7 +683,7 @@ impl EsBaseTools {
             .transport()
             .send(
                 elasticsearch::http::Method::Post,
-                "/_application/search_application/GSEDOCS/_search", // Use the search application endpoint
+                "/_application/search_application/GSE_DEVHYBRID/_search", // Use the search application endpoint
                 http::HeaderMap::new(),
                 None::<&()>,
                 Some(elasticsearch::http::request::JsonBody::new(search_request)),
